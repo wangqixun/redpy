@@ -1,0 +1,19 @@
+// [python quickstart](https://grpc.io/docs/quickstart/python.html#run-a-grpc-application)
+// python -m grpc_tools.protoc --python_out=. --grpc_python_out=. -I. xxxxxxx.proto
+
+
+syntax = "proto3";
+
+service Diffusion {
+    rpc infer_one_text(DOneTextRequest) returns (DOneTextReply) {}
+}
+
+message DOneTextRequest {
+    bytes input_bytes = 1;
+}
+
+message DOneTextReply {
+    bytes result_bytes = 1;
+}
+
+

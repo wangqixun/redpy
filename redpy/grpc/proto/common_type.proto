@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+
+// NOTE:此文件尽量都是原子的、通用、基础数据类型定义,减少拷贝操作
+
+message Int32Array { //
+  repeated int32 int32_elems = 1;
+}
+
+message Int64Array { //
+  repeated int64 int64_elems = 1;
+}
+
+message Uint64Array { //
+  repeated uint64 uint64_elems = 1;
+}
+
+message FloatArray { //
+  repeated float float_elems = 1;
+}
+
+message StringArray { //
+  repeated string str_elems = 1;
+}
+
+message BytesArray { //
+  repeated bytes bytes_elems = 1;
+}
+
+message BoolArray { //
+  repeated bool bool_elems = 1;
+}
+
+// 可以用作 point 坐标or宽高，如 (x,y) or (w,h)
+message Int32Pair {
+  int32 first = 1;
+  int32 second = 2;
+}
+
+// 可以用作 location 坐标，如 (x1,y1,x2,y2) or (x1,y1,w,h)
+message Int32Quad {
+  int32 first = 1;
+  int32 second = 2;
+  int32 third = 3;
+  int32 fourth = 4;
+}
+
+message FloatPair {
+  float first = 1;
+  float second = 2;
+}
+
+message BoolPair {
+  bool first = 1;
+  bool second = 2;
+}
+
+message StringPair {
+  string first = 1;
+  string second = 2;
+}
+
+message FeatureItem { // ann index使用的 向量底层输入就是uint64的id
+  uint64 id = 1;
+  FloatArray float_array = 2;
+}
+
+message CommonValue {
+  enum ValueType { // 有必要再定义一个UINT64和UINT64_ARRAY类型么？
+    UNKNOWN_TYPE = 0;
+    FLOAT = 1;
+    BYTES = 2;
+    INT64 = 3;
+    FLOAT_ARRAY = 4;
+    BYTES_ARRAY = 5;
+    INT64_ARRAY = 6;
+  };
+  ValueType value_type = 1;
+  oneof value {
+    int64 int64_value = 2;
+    float float_value = 3;
+    bytes bytes_value = 4; // byte 比 string效率高一些，只是不会检查utf8规范
+    Int64Array int64_array_value = 5;
+    FloatArray float_array_value = 6;
+    BytesArray bytes_array_value = 7;
+  }
+}
+message CommonKeyValuePair {
+  bytes key = 1;
+  CommonValue value = 2;
+}
+
+message CommonKeyValueMap { //
+  map<string, CommonValue> map_key_value = 1;
+}
+
+message Id {
+  oneof id {
+    uint64 uint64_id = 1;
+    bytes str_id = 2;
+  }
+}

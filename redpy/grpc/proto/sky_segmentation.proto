@@ -1,0 +1,19 @@
+// [python quickstart](https://grpc.io/docs/quickstart/python.html#run-a-grpc-application)
+// python -m grpc_tools.protoc --python_out=. --grpc_python_out=. -I../../proto sky_segmentation.proto
+
+
+syntax = "proto3";
+
+service SkySegmentation {
+    rpc infer_one_img(SSOneImgRequest) returns (SSOneImgReply) {}
+}
+
+message SSOneImgRequest {
+    bytes img_bgr_bytes = 1;
+}
+
+message SSOneImgReply {
+    bytes result_bytes = 1;
+}
+
+

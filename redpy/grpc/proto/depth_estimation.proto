@@ -1,0 +1,19 @@
+// [python quickstart](https://grpc.io/docs/quickstart/python.html#run-a-grpc-application)
+// python -m grpc_tools.protoc --python_out=. --grpc_python_out=. -I. xxxxxxx.proto
+
+
+syntax = "proto3";
+
+service DepthEstimation {
+    rpc infer_one_img(DEOneImgRequest) returns (DEOneImgReply) {}
+}
+
+message DEOneImgRequest {
+    bytes img_bgr_bytes = 1;
+}
+
+message DEOneImgReply {
+    bytes result_bytes = 1;
+}
+
+

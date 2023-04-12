@@ -1,0 +1,19 @@
+// [python quickstart](https://grpc.io/docs/quickstart/python.html#run-a-grpc-application)
+// python -m grpc_tools.protoc --python_out=. --grpc_python_out=. -I. xxxxxxx.proto
+
+
+syntax = "proto3";
+
+service Cartoonize {
+    rpc infer_one_img(CartoonizeOneImgRequest) returns (CartoonizeOneImgReply) {}
+}
+
+message CartoonizeOneImgRequest {
+    bytes img_bgr_bytes = 1;
+}
+
+message CartoonizeOneImgReply {
+    bytes result_bytes = 1;
+}
+
+

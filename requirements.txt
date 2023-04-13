@@ -14,7 +14,7 @@ pycocotools
 cos-python-sdk-v5
 pandas
 moviepy==2.0.0.dev2
-decord==0.4.1
+decord
 streamlit==1.10.0
 protobuf==3.19.4
 grpcio==1.44.0

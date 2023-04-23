@@ -5,7 +5,7 @@ import torch
 # from diffusers import DPMSolverMultistepScheduler
 
 all = [
-    'add_textual_inversion_pt',
+    'add_textual_inversion',
 ]
 
 

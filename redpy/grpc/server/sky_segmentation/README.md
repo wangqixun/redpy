@@ -14,16 +14,17 @@
 ## 调用demo
 python:
 ```python
-from redpy.grpc import SkySegmentationClient
 import cv2
+from redpy.grpc import CommonClient
 
-if __name__ == '__main__':
-    img = cv2.imread('/share/wangqixun/workspace/github_project/redpy/test/data/tennis.png')
-    client = SkySegmentationClient(
-        ip='10.4.200.42',
-        port='30125',
-    )
-    res = client.run(img)
+image = cv2.imread('/share/wangqixun/workspace/github_project/redpy/test/data/WX20230420-175738@2x.png')
+client = CommonClient(
+    ip='10.4.200.42',
+    port='30125',
+    max_send_message_length=100, 
+    max_receive_message_length=100,
+)
+res = client.run([image])
 ```
 
 ##### 负责人：guiwan

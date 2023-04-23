@@ -7,23 +7,28 @@
 ## server 地址
 - **sit环境**
   - IP: 10.4.200.42
-  - Port: 30124
+  - Port: 30301
 - **prod环境**
   - 暂无
 
 ## 调用demo
 python:
 ```python
-from redpy.grpc import DepthEstimationClient
+import numpy as np
 import cv2
+import pickle
+from redpy.grpc import CommonClient
 
 if __name__ == '__main__':
     img = cv2.imread('/share/wangqixun/workspace/github_project/redpy/test/data/beauty.jpg')
-    client = DepthEstimationClient(
+    client = CommonClient(
         ip='10.4.200.42',
-        port='30124',
+        port='30301',
+        max_send_message_length=100, 
+        max_receive_message_length=100,
     )
-    res = client.run(img)
+    res = client.run([img])
+    print(res)
 ```
 
 ##### 负责人：guiwan

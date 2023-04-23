@@ -30,7 +30,7 @@ class blip2(object):
             self.queue.put([processor, model, device])        
 
     
-    @convert_to_server("Blip2Server", 30302, 1)
+    @convert_to_server("Blip2Server", 30302, 2)
     def infer(self, image):
         
         if isinstance(image, str):
@@ -54,7 +54,7 @@ class blip2(object):
 if __name__ == '__main__':
     
     # load model
-    blip2_model = blip2(queue_maxsize=1, device_list=["cuda:0"])
+    blip2_model = blip2(queue_maxsize=2, device_list=["cuda:0"])
     
     # load image
     # image = np.zeros([512, 512, 3], dtype=np.uint8) + 128

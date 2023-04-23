@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 import numpy as np
 import PIL.Image
 import torch
-from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
+from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer, CLIPProcessor, CLIPVisionModelWithProjection
 import re
 import importlib
 import os
@@ -14,6 +14,8 @@ import cv2
 from PIL import Image
 from torchvision.transforms import Resize
 from IPython import embed
+
+dim_feature = 1024
 
 all = [
     'draw_kps',
@@ -514,9 +516,9 @@ def get_weighted_text_embeddings(
 class VisualControlNetModel(ControlNetModel):
     def __init__(self, in_channels: int = 4, flip_sin_to_cos: bool = True, freq_shift: int = 0, down_block_types: Tuple[str] = ..., only_cross_attention: Union[bool, Tuple[bool]] = False, block_out_channels: Tuple[int] = ..., layers_per_block: int = 2, downsample_padding: int = 1, mid_block_scale_factor: float = 1, act_fn: str = "silu", norm_num_groups: Optional[int] = 32, norm_eps: float = 0.00001, cross_attention_dim: int = 1280, attention_head_dim: Union[int, Tuple[int]] = 8, use_linear_projection: bool = False, class_embed_type: Optional[str] = None, num_class_embeds: Optional[int] = None, upcast_attention: bool = False, resnet_time_scale_shift: str = "default", projection_class_embeddings_input_dim: Optional[int] = None, controlnet_conditioning_channel_order: str = "rgb", conditioning_embedding_out_channels: Optional[Tuple[int]] = ...):
         super().__init__(in_channels, flip_sin_to_cos, freq_shift, down_block_types, only_cross_attention, block_out_channels, layers_per_block, downsample_padding, mid_block_scale_factor, act_fn, norm_num_groups, norm_eps, cross_attention_dim, attention_head_dim, use_linear_projection, class_embed_type, num_class_embeds, upcast_attention, resnet_time_scale_shift, projection_class_embeddings_input_dim, controlnet_conditioning_channel_order, conditioning_embedding_out_channels)
-        self.visual_projection = torch.nn.Linear(512, 768)
-        self.visual_position_embedding = torch.nn.Embedding(77, 768)
-        self.register_buffer("visual_nb_token_repeat", torch.tensor(64))
+        self.visual_projection = torch.nn.Linear(dim_feature, 768)
+        self.visual_position_embedding = torch.nn.Embedding(512, 768)
+        self.register_buffer("visual_nb_token_repeat", torch.tensor(512))
         self.register_buffer("visual_position_ids", torch.arange(512).reshape([1, -1]))
 
     def visual_embedding(self, visual_embs):
@@ -549,9 +551,11 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         tokenizer: CLIPTokenizer,
         unet: UNet2DConditionModel,
         scheduler: KarrasDiffusionSchedulers,
-        safety_checker: StableDiffusionSafetyChecker = None,
-        feature_extractor: CLIPFeatureExtractor = None,
-        # requires_safety_checker: bool = True,
+        safety_checker: StableDiffusionSafetyChecker,
+        feature_extractor: CLIPFeatureExtractor,
+        clip_vision_model: CLIPVisionModelWithProjection = None,
+        # image_processor: CLIPProcessor = None,
+        requires_safety_checker: bool = True,
         controlnet_list: torch.nn.ModuleList = [],
     ):
 
@@ -575,12 +579,14 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
             scheduler=scheduler,
             safety_checker=safety_checker,
             feature_extractor=feature_extractor,
+            clip_vision_model=clip_vision_model,
+            # image_processor=image_processor,
         )
         self.controlnet_list.dtype = self.unet.dtype
         self.controlnet_list.device = self.unet.device
 
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
-        # self.register_to_config(requires_safety_checker=requires_safety_checker)
+        self.register_to_config(requires_safety_checker=requires_safety_checker)
 
 
     def save_pretrained(
@@ -1340,29 +1346,9 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
 
                     down_block_res_samples, mid_block_res_sample = [0]*len(down_block_res_samples_list[0]), 0
                     for idx_controlnet in range(len(down_block_res_samples_list)):
-                        need_permute = False
-                        if isinstance(mid_block_res_sample, torch.Tensor):
-                            _,_,h1,w1 = mid_block_res_sample_list[idx_controlnet].shape
-                            _,_,h2,w2 = mid_block_res_sample.shape
-                            if h1 != h2 and w1 != w2:
-                                need_permute = True
-                        if need_permute:
-                            mid_block_res_sample = torch.permute(mid_block_res_sample, [0,2,3,1]) + torch.permute(mid_block_res_sample_list[idx_controlnet], [0,2,3,1])
-                            mid_block_res_sample = torch.permute(mid_block_res_sample, [0,3,1,2])
-                        else:
-                            mid_block_res_sample += mid_block_res_sample_list[idx_controlnet]
+                        mid_block_res_sample += mid_block_res_sample_list[idx_controlnet]
                         for idx_dbrs in range(len(down_block_res_samples_list[idx_controlnet])):
-                            need_permute = False
-                            if isinstance(down_block_res_samples[idx_dbrs], torch.Tensor):
-                                _,_,h1,w1 = down_block_res_samples_list[idx_controlnet][idx_dbrs].shape
-                                _,_,h2,w2 = down_block_res_samples[idx_dbrs].shape
-                                if h1 != h2 and w1 != w2:
-                                    need_permute = True
-                            if need_permute:
-                                down_block_res_samples[idx_dbrs] = torch.permute(down_block_res_samples[idx_dbrs], [0,2,3,1]) + torch.permute(down_block_res_samples_list[idx_controlnet][idx_dbrs], [0,2,3,1])
-                                down_block_res_samples[idx_dbrs] = torch.permute(down_block_res_samples[idx_dbrs], [0,3,1,2])
-                            else:
-                                down_block_res_samples[idx_dbrs] += down_block_res_samples_list[idx_controlnet][idx_dbrs]
+                            down_block_res_samples[idx_dbrs] += down_block_res_samples_list[idx_controlnet][idx_dbrs]
                 else:
                     down_block_res_samples, mid_block_res_sample = [0] * 12, 0
 
@@ -1581,7 +1567,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
             )
             if 'control_visual_emb' in cc_info:
                 face_emb = torch.tensor(cc_info['control_visual_emb']).to(device=device, dtype=dtype)
-                face_emb = face_emb.reshape([-1, 1, 512])
+                face_emb = face_emb.reshape([1, -1, dim_feature])
                 cc_info['control_visual_emb'] = face_emb
 
         # 5. Prepare timesteps
@@ -1648,29 +1634,9 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
 
                     down_block_res_samples, mid_block_res_sample = [0]*len(down_block_res_samples_list[0]), 0
                     for idx_controlnet in range(len(down_block_res_samples_list)):
-                        need_permute = False
-                        if isinstance(mid_block_res_sample, torch.Tensor):
-                            _,_,h1,w1 = mid_block_res_sample_list[idx_controlnet].shape
-                            _,_,h2,w2 = mid_block_res_sample.shape
-                            if h1 != h2 and w1 != w2:
-                                need_permute = True
-                        if need_permute:
-                            mid_block_res_sample = torch.permute(mid_block_res_sample, [0,2,3,1]) + torch.permute(mid_block_res_sample_list[idx_controlnet], [0,2,3,1])
-                            mid_block_res_sample = torch.permute(mid_block_res_sample, [0,3,1,2])
-                        else:
-                            mid_block_res_sample += mid_block_res_sample_list[idx_controlnet]
+                        mid_block_res_sample += mid_block_res_sample_list[idx_controlnet]
                         for idx_dbrs in range(len(down_block_res_samples_list[idx_controlnet])):
-                            need_permute = False
-                            if isinstance(down_block_res_samples[idx_dbrs], torch.Tensor):
-                                _,_,h1,w1 = down_block_res_samples_list[idx_controlnet][idx_dbrs].shape
-                                _,_,h2,w2 = down_block_res_samples[idx_dbrs].shape
-                                if h1 != h2 and w1 != w2:
-                                    need_permute = True
-                            if need_permute:
-                                down_block_res_samples[idx_dbrs] = torch.permute(down_block_res_samples[idx_dbrs], [0,2,3,1]) + torch.permute(down_block_res_samples_list[idx_controlnet][idx_dbrs], [0,2,3,1])
-                                down_block_res_samples[idx_dbrs] = torch.permute(down_block_res_samples[idx_dbrs], [0,3,1,2])
-                            else:
-                                down_block_res_samples[idx_dbrs] += down_block_res_samples_list[idx_controlnet][idx_dbrs]
+                            down_block_res_samples[idx_dbrs] += down_block_res_samples_list[idx_controlnet][idx_dbrs]
                 else:
                     down_block_res_samples, mid_block_res_sample = [0] * 12, 0
 
@@ -1807,7 +1773,27 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         controlnet_conditioning_scale: Union[float, List[float]] = 1.0,
         controlnet_conditioning=[],
         max_embeddings_multiples=3,
-        add_predicted_noise_type='neg',
+
+        # self,
+        # prompt: Union[str, List[str]] = None,
+        # image: Union[torch.Tensor, PIL.Image.Image] = None,
+        # strength: float = 0.8,
+        # height: Optional[int] = None,
+        # width: Optional[int] = None,
+        # num_inference_steps: int = 50,
+        # guidance_scale: float = 7.5,
+        # negative_prompt: Optional[Union[str, List[str]]] = None,
+        # num_images_per_prompt: Optional[int] = 1,
+        # eta: float = 0.0,
+        # generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        # latents: Optional[torch.FloatTensor] = None,
+        # prompt_embeds: Optional[torch.FloatTensor] = None,
+        # negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        # output_type: Optional[str] = "pil",
+        # return_dict: bool = True,
+        # callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+        # callback_steps: int = 1,
+        # cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
 
         # 0. Default height and width to unet
@@ -1950,29 +1936,9 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
 
                     down_block_res_samples, mid_block_res_sample = [0]*len(down_block_res_samples_list[0]), 0
                     for idx_controlnet in range(len(down_block_res_samples_list)):
-                        need_permute = False
-                        if isinstance(mid_block_res_sample, torch.Tensor):
-                            _,_,h1,w1 = mid_block_res_sample_list[idx_controlnet].shape
-                            _,_,h2,w2 = mid_block_res_sample.shape
-                            if h1 != h2 and w1 != w2:
-                                need_permute = True
-                        if need_permute:
-                            mid_block_res_sample = torch.permute(mid_block_res_sample, [0,2,3,1]) + torch.permute(mid_block_res_sample_list[idx_controlnet], [0,2,3,1])
-                            mid_block_res_sample = torch.permute(mid_block_res_sample, [0,3,1,2])
-                        else:
-                            mid_block_res_sample += mid_block_res_sample_list[idx_controlnet]
+                        mid_block_res_sample += mid_block_res_sample_list[idx_controlnet]
                         for idx_dbrs in range(len(down_block_res_samples_list[idx_controlnet])):
-                            need_permute = False
-                            if isinstance(down_block_res_samples[idx_dbrs], torch.Tensor):
-                                _,_,h1,w1 = down_block_res_samples_list[idx_controlnet][idx_dbrs].shape
-                                _,_,h2,w2 = down_block_res_samples[idx_dbrs].shape
-                                if h1 != h2 and w1 != w2:
-                                    need_permute = True
-                            if need_permute:
-                                down_block_res_samples[idx_dbrs] = torch.permute(down_block_res_samples[idx_dbrs], [0,2,3,1]) + torch.permute(down_block_res_samples_list[idx_controlnet][idx_dbrs], [0,2,3,1])
-                                down_block_res_samples[idx_dbrs] = torch.permute(down_block_res_samples[idx_dbrs], [0,3,1,2])
-                            else:
-                                down_block_res_samples[idx_dbrs] += down_block_res_samples_list[idx_controlnet][idx_dbrs]
+                            down_block_res_samples[idx_dbrs] += down_block_res_samples_list[idx_controlnet][idx_dbrs]
                 else:
                     down_block_res_samples, mid_block_res_sample = [0] * 12, 0
 
@@ -1997,9 +1963,8 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
 
                 # masking
-                if add_predicted_noise_type == 'pos':
-                    init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise_pred_text, torch.tensor([t]))
-                elif add_predicted_noise_type == 'neg':
+                add_predicted_noise = True  # TODO 
+                if add_predicted_noise:
                     init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise_pred_uncond, torch.tensor([t]))
                 else:
                     init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise, torch.tensor([t]))
@@ -2058,4 +2023,91 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
             return (image, has_nsfw_concept)
 
         return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+
+
+if __name__ == '__main__':
+    clip_path = '/share/wangqixun/workspace/github_project/diffusers/checkpoint/clip-vit-large-patch14'
+    clip_vision_model = '/share/wangqixun/workspace/github_project/diffusers/checkpoint/controlnet/exp/cloth_conrtol_v3/CLIPVisionModelWithProjection'
+    base_model = "/share/wangqixun/workspace/github_project/diffusers/checkpoint/stable-diffusion-v1-5"
+    controlnet_path_list = [
+        '/share/wangqixun/workspace/github_project/diffusers/checkpoint/controlnet/exp/cloth_conrtol_v3/VisualControlNetModel'
+    ]
+    generator = torch.manual_seed(0)
+
+    clip_vision_model = CLIPVisionModelWithProjection.from_pretrained(clip_vision_model, ignore_mismatched_sizes=True)
+    image_processor = CLIPProcessor.from_pretrained(clip_path).image_processor
+    pipe = StableDiffusionCommonPipeline.from_pretrained(
+        base_model,
+        controlnet_list=controlnet_path_list,
+        safety_checker=None,
+        feature_extractor=None,
+        clip_vision_model=clip_vision_model,
+        # image_processor=image_processor,
+    )
+    # pipe.unet.load_attn_procs(lora_model)
+    # pipe = add_lora_bin(lora_model, pipe, 1.0)
+    # pipe, textual_inversion_tokens = add_textual_inversion(pipe, textual_inversion_file)
+    # pipe = pipe.to(torch.float16)
+    # pipe.vae = pipe.vae.to(torch.float32)
+    # pipe = pipe.to('cuda:0')
+    pipe = pipe.cuda_half()
+
+    clip_vision_model = clip_vision_model.to('cuda').to(torch.float16)
+
+
+    idx_start = 0
+    for idx in range(0, 5*6, 1):
+        idx_image = idx // (6) + 1
+        idx_cloth = idx % (6) + 1
+        cloth_image = f'/share/wangqixun/workspace/business/cloth/data/cloth_{idx_image}.jpeg'
+        openpose_image = f'/share/wangqixun/workspace/business/cloth/data/openopse_{idx_cloth}.png'
+
+        cloth_image = Image.open(cloth_image)
+        # w, h = cloth_image.size
+        # ratio = 512 / max(h, w)
+        # cloth_image = cloth_image.resize([int(ratio*w), round(ratio*h)])
+
+        openpose_image = Image.open(openpose_image)
+        w, h = openpose_image.size
+        ratio = 512 / max(h, w)
+        openpose_image = openpose_image.resize([int(ratio*w), round(ratio*h)])
+
+        cloth_tensor = torch.tensor(image_processor(cloth_image).pixel_values[0]).to('cuda').to(torch.float16)[None]
+        if dim_feature == 768:
+            cloth_emb = clip_vision_model(cloth_tensor).image_embeds.cpu().detach().numpy()
+        elif dim_feature == 1024:
+            cloth_emb = clip_vision_model(cloth_tensor)
+            cloth_emb = cloth_emb.last_hidden_state + cloth_emb.image_embeds.max() * 0
+            cloth_emb = cloth_emb.cpu().detach().numpy()
+
+        # controlnet_conditioning
+        controlnet_conditioning = [
+            dict(
+                control_image=openpose_image,
+                control_index=0,
+                control_weight=1,
+                control_visual_emb=cloth_emb,
+            ),
+        ]
+        # controlnet_conditioning = []
+
+        prompt = f"portrait of 25 year old girl with (red long hair:1.1), looking at viewer, sky, sea"
+        negative_prompt = f"canvas frame, cartoon, 3d, ((disfigured)), ((bad art)), ((deformed)),((extra limbs)),((close up)),"
+        image = pipe.text2img(
+            controlnet_conditioning=controlnet_conditioning,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            guidance_scale=4.,
+            num_inference_steps=50,
+            generator=generator,
+        ).images[0]
+
+        image_np = np.array(image)
+        cloth_image_np = np.array(cloth_image)
+        if image_np.shape != cloth_image_np.shape:
+            cloth_image_np = cv2.resize(cloth_image_np, (image_np.shape[1], image_np.shape[0]))
+        image_np = np.concatenate([image_np, cloth_image_np], axis=0)
+        image = Image.fromarray(image_np)
+        image.save(f'/share/wangqixun/workspace/tmp/{idx:04d}.jpg')
+
 

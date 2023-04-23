@@ -48,7 +48,7 @@ def add_lora_weiUI(lora_path, pipe, lora_weight=0.5):
         tensors = {}
         with safe_open(lora_path, framework="pt", device="cpu") as f:
             for key in f.keys():
-                tensors[key] = f.get_tensor(key).to(device)
+                tensors[key] = f.get_tensor(key).to(device=device)
 
         for k_lora, v_lora in tensors.items():
             if k_lora.startswith('lora_te'):
@@ -107,7 +107,8 @@ def add_lora_weiUI(lora_path, pipe, lora_weight=0.5):
             einsum_res = f"ikabcdefg"
             length_shape = len(up_w.shape)
             einsum_str = f"{einsum_a[:length_shape]},{einsum_b[:length_shape]}->{einsum_res[:length_shape]}"
-            d_w = torch.einsum(einsum_str, up_w, down_w)
+            dtype = cur_attr.weight.data.dtype
+            d_w = torch.einsum(einsum_str, up_w.to(torch.float32), down_w.to(torch.float32)).to(dtype)
             # print(d_w.shape, wight)
 
             # wight = 1

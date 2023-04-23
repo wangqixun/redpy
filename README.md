@@ -3,13 +3,13 @@
 
 ## Install
 ```
-pip install git+https://code.devops.xiaohongshu.com/wangqixun/redpy.git@stable
+pip install git+https://github.com/wangqixun/redpy.git@stable
 ```
 
 或者 clone 下来手动安装
 
 ```
-git clone -b stable https://code.devops.xiaohongshu.com/wangqixun/redpy.git
+git clone -b stable https://github.com/wangqixun/redpy.git
 cd redpy
 pip install -e .
 ```

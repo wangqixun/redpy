@@ -5,8 +5,6 @@
 
 
 ```
-git clone -b stable https://code.devops.xiaohongshu.com/wangqixun/redpy.git
-cd redpy
 pip install -e .
 ```
 

@@ -7,6 +7,7 @@ from concurrent import futures
 import time
 import pickle
 import os
+import traceback
 # from IPython import embed
 
 from redpy.utils_redpy.logger_utils import setup_logger
@@ -49,7 +50,16 @@ def convert_to_server(server_name, port, max_workers=1):
 
         class Servicer():
             def __init__(self, servicer) -> None:
-                for k, v in servicer.__dict__.items():
+                # for k, v in servicer.__dict__.items():
+                #     self.__setattr__(k, v)
+                logger.info('继承成员：')
+                for k in dir(servicer):
+                    if k.startswith('__'):
+                        continue
+                    v = getattr(servicer, k)
+                    # if not callable(v):
+                    #     continue
+                    logger.info(k)
                     self.__setattr__(k, v)
 
             def common_infer(self, request, context):
@@ -63,7 +73,7 @@ def convert_to_server(server_name, port, max_workers=1):
                     t3 = time.time()
                     logger.info(f'   {server_name} [{t3-t2:.4f}] infer finish.')
                 except Exception as e:
-                    logger.error(f'   {e}')
+                    logger.error(f'   {traceback.format_exc()}')
                     result = None
                 result_bytes = pickle.dumps(result)
                 output = pb2.CommonReply(result_bytes=result_bytes)

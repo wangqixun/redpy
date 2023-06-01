@@ -20,7 +20,8 @@ setup(
     name="redpy",
     version="0.0.1",
     author="wangqixun",
-    author_email="253817124@qq.com",
+    author_email="wangqixun@xiaohongshu.com",
+    description="Xiaohongshu Shequ Media-AI.",
 
     # 你要安装的包，通过 setuptools.find_packages 找到当前目录下有哪些包
     packages=find_packages(),

@@ -11,7 +11,7 @@
 人脸修复，多用于小人脸丑陋、模糊的修复。大人脸也可以用，但是感觉没太大必要
 
 <div align=center>
-<img src="test/data/readme/face_refinement/face_refinement_pipeline2.png" width = "750" />
+<img src="../../test/data/readme/face_refinement/face_refinement_pipeline2.png" width = "750" />
 </div>
 
 使用方法
@@ -72,14 +72,14 @@ for idx in range(len(face_info)):
 
 input| img2img | face crop | face kps | face refinement | output 
 :-------------------------:|:-------------------------:|:-------------------------:|:-------------------------:|:-------------------------:|:-------------------------:
-![img](test/data/readme/face_refinement/11.jpeg)|![img](test/data/readme/face_refinement/12.jpeg)|![img](test/data/readme/face_refinement/13.jpeg)|![img](test/data/readme/face_refinement/14.jpeg)|![img](test/data/readme/face_refinement/15.jpeg)|![img](test/data/readme/face_refinement/16.jpeg)
-![img](test/data/readme/face_refinement/21.jpeg)|![img](test/data/readme/face_refinement/22.jpeg)|![img](test/data/readme/face_refinement/23.jpeg)|![img](test/data/readme/face_refinement/24.jpeg)|![img](test/data/readme/face_refinement/25.jpeg)|![img](test/data/readme/face_refinement/26.jpeg)
-![img](test/data/readme/face_refinement/31.jpeg)|![img](test/data/readme/face_refinement/32.jpeg)|![img](test/data/readme/face_refinement/33.jpeg)|![img](test/data/readme/face_refinement/34.jpeg)|![img](test/data/readme/face_refinement/35.jpeg)|![img](test/data/readme/face_refinement/36.jpeg)
-![img](test/data/readme/face_refinement/41.jpeg)|![img](test/data/readme/face_refinement/42.jpeg)|![img](test/data/readme/face_refinement/43.jpeg)|![img](test/data/readme/face_refinement/44.jpeg)|![img](test/data/readme/face_refinement/45.jpeg)|![img](test/data/readme/face_refinement/46.jpeg)
-![img](test/data/readme/face_refinement/51.jpeg)|![img](test/data/readme/face_refinement/52.jpeg)|![img](test/data/readme/face_refinement/53.jpeg)|![img](test/data/readme/face_refinement/54.jpeg)|![img](test/data/readme/face_refinement/55.jpeg)|![img](test/data/readme/face_refinement/56.jpeg)
-![img](test/data/readme/face_refinement/61.jpeg)|![img](test/data/readme/face_refinement/62.jpeg)|![img](test/data/readme/face_refinement/63.jpeg)|![img](test/data/readme/face_refinement/64.jpeg)|![img](test/data/readme/face_refinement/65.jpeg)|![img](test/data/readme/face_refinement/66.jpeg)
-![img](test/data/readme/face_refinement/71.jpeg)|![img](test/data/readme/face_refinement/72.jpeg)|![img](test/data/readme/face_refinement/73.jpeg)|![img](test/data/readme/face_refinement/74.jpeg)|![img](test/data/readme/face_refinement/75.jpeg)|![img](test/data/readme/face_refinement/76.jpeg)
-![img](test/data/readme/face_refinement/81.jpeg)|![img](test/data/readme/face_refinement/82.jpeg)|![img](test/data/readme/face_refinement/83.jpeg)|![img](test/data/readme/face_refinement/84.jpeg)|![img](test/data/readme/face_refinement/85.jpeg)|![img](test/data/readme/face_refinement/86.jpeg)
+![img](../../test/data/readme/face_refinement/11.jpeg)|![img](../../test/data/readme/face_refinement/12.jpeg)|![img](../../test/data/readme/face_refinement/13.jpeg)|![img](../../test/data/readme/face_refinement/14.jpeg)|![img](../../test/data/readme/face_refinement/15.jpeg)|![img](../../test/data/readme/face_refinement/16.jpeg)
+![img](../../test/data/readme/face_refinement/21.jpeg)|![img](../../test/data/readme/face_refinement/22.jpeg)|![img](../../test/data/readme/face_refinement/23.jpeg)|![img](../../test/data/readme/face_refinement/24.jpeg)|![img](../../test/data/readme/face_refinement/25.jpeg)|![img](../../test/data/readme/face_refinement/26.jpeg)
+![img](../../test/data/readme/face_refinement/31.jpeg)|![img](../../test/data/readme/face_refinement/32.jpeg)|![img](../../test/data/readme/face_refinement/33.jpeg)|![img](../../test/data/readme/face_refinement/34.jpeg)|![img](../../test/data/readme/face_refinement/35.jpeg)|![img](../../test/data/readme/face_refinement/36.jpeg)
+![img](../../test/data/readme/face_refinement/41.jpeg)|![img](../../test/data/readme/face_refinement/42.jpeg)|![img](../../test/data/readme/face_refinement/43.jpeg)|![img](../../test/data/readme/face_refinement/44.jpeg)|![img](../../test/data/readme/face_refinement/45.jpeg)|![img](../../test/data/readme/face_refinement/46.jpeg)
+![img](../../test/data/readme/face_refinement/51.jpeg)|![img](../../test/data/readme/face_refinement/52.jpeg)|![img](../../test/data/readme/face_refinement/53.jpeg)|![img](../../test/data/readme/face_refinement/54.jpeg)|![img](../../test/data/readme/face_refinement/55.jpeg)|![img](../../test/data/readme/face_refinement/56.jpeg)
+![img](../../test/data/readme/face_refinement/61.jpeg)|![img](../../test/data/readme/face_refinement/62.jpeg)|![img](../../test/data/readme/face_refinement/63.jpeg)|![img](../../test/data/readme/face_refinement/64.jpeg)|![img](../../test/data/readme/face_refinement/65.jpeg)|![img](../../test/data/readme/face_refinement/66.jpeg)
+![img](../../test/data/readme/face_refinement/71.jpeg)|![img](../../test/data/readme/face_refinement/72.jpeg)|![img](../../test/data/readme/face_refinement/73.jpeg)|![img](../../test/data/readme/face_refinement/74.jpeg)|![img](../../test/data/readme/face_refinement/75.jpeg)|![img](../../test/data/readme/face_refinement/76.jpeg)
+![img](../../test/data/readme/face_refinement/81.jpeg)|![img](../../test/data/readme/face_refinement/82.jpeg)|![img](../../test/data/readme/face_refinement/83.jpeg)|![img](../../test/data/readme/face_refinement/84.jpeg)|![img](../../test/data/readme/face_refinement/85.jpeg)|![img](../../test/data/readme/face_refinement/86.jpeg)
 
 
 

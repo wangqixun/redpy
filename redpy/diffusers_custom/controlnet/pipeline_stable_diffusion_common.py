@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 import numpy as np
 import PIL.Image
 import torch
+import torch.nn.functional as F
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 import re
 import importlib
@@ -56,6 +57,7 @@ from diffusers.pipelines.stable_diffusion import (
 from diffusers.schedulers import (
     KarrasDiffusionSchedulers
 )
+from diffusers.loaders import TextualInversionLoaderMixin, LoraLoaderMixin, FromCkptMixin
 from diffusers.utils import (
     logging,
     PIL_INTERPOLATION,
@@ -510,7 +512,6 @@ def get_weighted_text_embeddings(
     return text_embeddings, None
 
 
-
 class VisualControlNetModel(ControlNetModel):
     def __init__(self, in_channels: int = 4, flip_sin_to_cos: bool = True, freq_shift: int = 0, down_block_types: Tuple[str] = ..., only_cross_attention: Union[bool, Tuple[bool]] = False, block_out_channels: Tuple[int] = ..., layers_per_block: int = 2, downsample_padding: int = 1, mid_block_scale_factor: float = 1, act_fn: str = "silu", norm_num_groups: Optional[int] = 32, norm_eps: float = 0.00001, cross_attention_dim: int = 1280, attention_head_dim: Union[int, Tuple[int]] = 8, use_linear_projection: bool = False, class_embed_type: Optional[str] = None, num_class_embeds: Optional[int] = None, upcast_attention: bool = False, resnet_time_scale_shift: str = "default", projection_class_embeddings_input_dim: Optional[int] = None, controlnet_conditioning_channel_order: str = "rgb", conditioning_embedding_out_channels: Optional[Tuple[int]] = ...):
         super().__init__(in_channels, flip_sin_to_cos, freq_shift, down_block_types, only_cross_attention, block_out_channels, layers_per_block, downsample_padding, mid_block_scale_factor, act_fn, norm_num_groups, norm_eps, cross_attention_dim, attention_head_dim, use_linear_projection, class_embed_type, num_class_embeds, upcast_attention, resnet_time_scale_shift, projection_class_embeddings_input_dim, controlnet_conditioning_channel_order, conditioning_embedding_out_channels)
@@ -540,7 +541,7 @@ def draw_kps(image_pil, kps, color_list=[(255,0,0), (0,255,0), (0,0,255), (255,2
     return out_img_pil
 
 
-class StableDiffusionCommonPipeline(DiffusionPipeline):
+class StableDiffusionCommonPipeline(DiffusionPipeline, TextualInversionLoaderMixin, LoraLoaderMixin, FromCkptMixin):
 
     def __init__(
         self,
@@ -786,6 +787,30 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         # We'll offload the last model manually.
         self.final_offload_hook = hook
 
+    def set_use_memory_efficient_attention_xformers(
+        self, valid: bool, attention_op: Optional[Callable] = None
+    ) -> None:
+        # Recursively walk through all the children.
+        # Any children which exposes the set_use_memory_efficient_attention_xformers method
+        # gets the message
+        def fn_recursive_set_mem_eff(module: torch.nn.Module):
+            if hasattr(module, "set_use_memory_efficient_attention_xformers"):
+                module.set_use_memory_efficient_attention_xformers(valid, attention_op)
+
+            for child in module.children():
+                fn_recursive_set_mem_eff(child)
+
+        # embed()
+        # xxxxxx
+        module_names, _ = self._get_signature_keys(self)
+        module_names = list(module_names) + ['controlnet_list']
+        modules = [getattr(self, n, None) for n in module_names]
+        modules = [m for m in modules if isinstance(m, torch.nn.Module)]
+
+
+        for module in modules:
+            fn_recursive_set_mem_eff(module)
+
     @property
     def _execution_device(self):
         r"""
@@ -967,7 +992,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
 
         return timesteps, num_inference_steps - t_start
 
-    def prepare_latents(self, image, timestep, batch_size, num_images_per_prompt, dtype, device, generator=None):
+    def prepare_latents(self, image, timestep, batch_size, num_images_per_prompt, dtype, device, generator=None, use_last_noise=False):
         if not isinstance(image, (torch.Tensor, PIL.Image.Image, list)):
             raise ValueError(
                 f"`image` has to be of type `torch.Tensor`, `PIL.Image.Image` or list but is {type(image)}"
@@ -1000,7 +1025,12 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
             init_latents = torch.cat([init_latents], dim=0)
 
         shape = init_latents.shape
-        noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+        if use_last_noise and hasattr(self, 'last_noise'):
+            noise = self.last_noise
+        else:
+            noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+        if not hasattr(self, 'last_noise'):
+            self.last_noise = noise
 
         # get latents
         init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
@@ -1089,6 +1119,28 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
 
         return text_embeddings
 
+    def _prepare_latent_couple_mask(self, mask_image_raw, height, width, device, dtype):
+        mask_image = mask_image_raw.resize((width//8, height//8))
+        mask_np = np.array(mask_image) / 255.
+        mask_np = mask_np[..., 0]
+        mask_tensor = torch.from_numpy(mask_np).to(device).to(dtype)
+        return mask_tensor
+
+    def _prepare_latent_couple_attention_mask(self, mask_tensor, sequence_length):
+        attention_mask = mask_tensor.reshape([-1, 1])
+        attention_mask = attention_mask.repeat_interleave(sequence_length, dim=1)
+        attention_mask = attention_mask.unsqueeze(0)
+        # [1, hw, sequence_length]
+        return attention_mask
+
+    def _prepare_latent_couple_attention_probs_weight(self, attention_probs_weight, sequence_length):
+        attention_probs_weight = attention_probs_weight.reshape([-1, 1])
+        attention_probs_weight = attention_probs_weight.repeat_interleave(sequence_length, dim=1)
+        attention_probs_weight = attention_probs_weight.unsqueeze(0)
+        # [1, hw, sequence_length]
+        return attention_probs_weight
+
+
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def img2img(
@@ -1096,6 +1148,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         prompt: Union[str, List[str]] = None,
         image: Union[torch.Tensor, PIL.Image.Image] = None,
         controlnet_conditioning=[],
+        latent_couple_conditioning=[],
         strength: float = 0.8,
         height: Optional[int] = None,
         width: Optional[int] = None,
@@ -1114,6 +1167,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         callback_steps: int = 1,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         max_embeddings_multiples=3,
+        use_last_noise=False,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -1244,6 +1298,37 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         )
         encoder_hidden_states = prompt_embeds
 
+        if len(latent_couple_conditioning) > 0:
+            lc_prompt = [lc['prompt'] for lc in latent_couple_conditioning]
+            lc_prompt_embeds = self._encode_prompt(
+                prompt=lc_prompt,
+                device=device,
+                num_images_per_prompt=num_images_per_prompt,
+                do_classifier_free_guidance=False,
+                negative_prompt=None,
+                max_embeddings_multiples=max_embeddings_multiples,
+            )
+            lc_encoder_hidden_states = lc_prompt_embeds
+        for idx_lc in range(len(latent_couple_conditioning)):
+            mask_image_raw = latent_couple_conditioning[idx_lc]['mask']
+            latent_couple_conditioning[idx_lc]['mask'] = self._prepare_latent_couple_mask(mask_image_raw, height, width, device, dtype)
+            if 'controlnet_conditioning' in latent_couple_conditioning[idx_lc]:
+                for idx_lc_cc in range(len(latent_couple_conditioning[idx_lc]['controlnet_conditioning'])):
+                    latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]['image'] = prepare_controlnet_conditioning_image(
+                        latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]['image'],
+                        width,
+                        height,
+                        batch_size * num_images_per_prompt,
+                        num_images_per_prompt,
+                        device,
+                        self.controlnet_list[0].dtype,
+                    )
+                    # lc_controlnet_index_list.append(latent_couple_conditioning[idx_lc]['control']['index'])
+                    if 'visual_emb' in latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]:
+                        face_emb = torch.tensor(latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]['visual_emb']).to(device=device, dtype=dtype)
+                        face_emb = face_emb.reshape([-1, 1, 512])
+                        latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]['visual_emb'] = face_emb
+
         # 4. Prepare mask
         image = prepare_image(image)
 
@@ -1290,15 +1375,34 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
             self.vae.dtype,
             device,
             generator,
+            use_last_noise=use_last_noise,
         )
         latents = latents.to(self.unet.dtype)
 
         if do_classifier_free_guidance:
             for idx in range(len(controlnet_conditioning)):
                 cc_info = controlnet_conditioning[idx]
-                cc_info['control_image'] = torch.cat([cc_info['control_image']] * 2)
+
+                # control_image
+                control_image_list = [cc_info['control_image']]
+                # for idx_lc in range(len(latent_couple_conditioning)):
+                #     control_image_list.append(cc_info['control_image'])
+                control_image_list.append(cc_info['control_image'])
+                cc_info['control_image'] = torch.cat(control_image_list)
+
+                # control_visual_emb
                 if 'control_visual_emb' in cc_info:
-                    cc_info['control_visual_emb'] = torch.cat([torch.zeros_like(cc_info['control_visual_emb']), cc_info['control_visual_emb']])
+                    if 'control_visual_emb_neg' in cc_info:
+                        control_visual_emb_neg = cc_info['control_visual_emb_neg']
+                        control_visual_emb_neg = torch.tensor(control_visual_emb_neg).to(device=device, dtype=dtype)
+                        control_visual_emb_neg = control_visual_emb_neg.reshape([-1, 1, 512])
+                    else:
+                        control_visual_emb_neg = torch.zeros_like(cc_info['control_visual_emb'])
+                    control_visual_emb_list = [control_visual_emb_neg]
+                    # for idx_lc in range(len(latent_couple_conditioning)):
+                    #     control_visual_emb_list.append(cc_info['control_visual_emb'])
+                    control_visual_emb_list.append(cc_info['control_visual_emb'])
+                    cc_info['control_visual_emb'] = torch.cat(control_visual_emb_list)
 
 
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
@@ -1322,7 +1426,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
                         if 'control_visual_emb' in cc_info:
                             controlnet_encoder_hidden_states = controlnet.visual_embedding(cc_info['control_visual_emb'])
                         else:
-                            controlnet_encoder_hidden_states = prompt_embeds
+                            controlnet_encoder_hidden_states = encoder_hidden_states
                         down_block_res_samples, mid_block_res_sample = controlnet(
                             latent_model_input,
                             t,
@@ -1376,10 +1480,88 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
                     mid_block_additional_residual=mid_block_res_sample,
                 ).sample
 
+                # latent couple every sample
+                if len(latent_couple_conditioning) > 0:
+                    lc_noise_pred_list = []
+                    for idx_lc in range(len(latent_couple_conditioning)):
+                        lcc_info = latent_couple_conditioning[idx_lc]
+                        lc_controlnet_conditioning = lcc_info.get('controlnet_conditioning', [])
+
+                        # controlnet
+                        if len(lc_controlnet_conditioning) > 0:
+                            lc_down_block_res_samples_list, lc_mid_block_res_sample_list = [], []
+                            for cc_info in lc_controlnet_conditioning:
+                                controlnet_conditioning_image = cc_info['image']
+                                controlnet = self.controlnet_list[int(cc_info['index'])]
+                                controlnet_conditioning_scale = cc_info['weight']
+                                if 'visual_emb' in cc_info:
+                                    controlnet_encoder_hidden_states = controlnet.visual_embedding(cc_info['visual_emb'])
+                                else:
+                                    controlnet_encoder_hidden_states = lc_encoder_hidden_states[idx_lc:idx_lc+1]
+                                lc_down_block_res_samples, lc_mid_block_res_sample = controlnet(
+                                    latent_model_input[0:1],
+                                    t,
+                                    encoder_hidden_states=controlnet_encoder_hidden_states,
+                                    controlnet_cond=controlnet_conditioning_image,
+                                    return_dict=False,
+                                )
+                                lc_down_block_res_samples = [
+                                    down_block_res_sample * controlnet_conditioning_scale
+                                    for down_block_res_sample in lc_down_block_res_samples
+                                ]
+                                lc_mid_block_res_sample *= controlnet_conditioning_scale
+                                lc_down_block_res_samples_list.append(lc_down_block_res_samples)
+                                lc_mid_block_res_sample_list.append(lc_mid_block_res_sample)
+
+                            lc_down_block_res_samples, lc_mid_block_res_sample = [0] * len(lc_down_block_res_samples_list[0]), 0
+                            for idx_controlnet in range(len(lc_down_block_res_samples_list)):
+                                lc_mid_block_res_sample += lc_mid_block_res_sample_list[idx_controlnet]
+                                for idx_dbrs in range(len(lc_down_block_res_samples_list[idx_controlnet])):
+                                    lc_down_block_res_samples[idx_dbrs] += lc_down_block_res_samples_list[idx_controlnet][idx_dbrs]
+                        else:
+                            lc_down_block_res_samples, lc_mid_block_res_sample = [0] * 12, 0
+
+                        lc_noise_pred = self.unet(
+                            latent_model_input[0:1],
+                            t,
+                            encoder_hidden_states=lc_encoder_hidden_states[idx_lc:idx_lc+1],
+                            cross_attention_kwargs=cross_attention_kwargs,
+                            down_block_additional_residuals=lc_down_block_res_samples,
+                            mid_block_additional_residual=lc_mid_block_res_sample,
+                        ).sample
+                        lc_noise_pred_list.append(lc_noise_pred)
+
+
                 # perform guidance
                 if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    if len(latent_couple_conditioning) > 0:
+                        noise_pred_uncond = noise_pred[0:1]
+                        noise_preds = [noise_pred[1:2]] + lc_noise_pred_list  # prompt, lc1, lc2 ....
+                        noise_preds = torch.cat(noise_preds)
+                        noise_preds = noise_pred_uncond + guidance_scale * (noise_preds - noise_pred_uncond)
+
+                        background_weight = (1 - np.mean([lcc['weight'] for lcc in latent_couple_conditioning]))
+                        result = noise_preds[0:1] * background_weight
+                        mask_empty = torch.ones_like(latent_couple_conditioning[0]['mask'])  # 没被lc覆盖的背景区域
+                        for idx_lc in range(1, len(noise_preds)):
+                            weight_idx = latent_couple_conditioning[idx_lc-1]['weight']
+                            mask_idx = latent_couple_conditioning[idx_lc-1]['mask']
+
+                            # 当前lc和历史lc的交集区域
+                            mask_intersection = mask_idx * (1 - mask_empty)
+
+                            result += noise_preds[idx_lc:idx_lc+1] * weight_idx * mask_idx * (1 - mask_intersection)
+                            result = (0.5 * result + 0.5 * (weight_idx * noise_preds[idx_lc:idx_lc+1] + (1 - weight_idx) * noise_preds[0:1])) * mask_intersection + result * (1 - mask_intersection)
+
+                            # 没被lc覆盖的背景区域
+                            mask_empty = mask_empty * (1 - mask_idx)
+
+                            # result += noise_preds[idx_lc:idx_lc+1] * weight_idx * mask_idx
+                        result += noise_preds[0:1] * (1 - background_weight) * mask_empty
+                        noise_pred = result
+                    else:
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
@@ -1454,7 +1636,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
 
         return height, width
 
-    def text2img_prepare_latents(self, image, timestep, batch_size, num_images_per_prompt, height, width,dtype, device, generator=None):
+    def text2img_prepare_latents(self, image, timestep, batch_size, num_images_per_prompt, height, width,dtype, device, generator=None, use_last_noise=False, noise_type='random'):
 
         if image is None:
             shape = (
@@ -1463,7 +1645,19 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
                 height // self.vae_scale_factor,
                 width // self.vae_scale_factor,
             )
-            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            # latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+
+            if use_last_noise and hasattr(self, 'last_noise'):
+                noise = self.last_noise
+            else:
+                noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+                if noise_type == 'symmetry':
+                    bs, c, h, w = noise.shape
+                    noise[:, :, :, w//2:] = torch.flip(noise[:, :, :, :w//2], dims=[3])
+            if not hasattr(self, 'last_noise'):
+                self.last_noise = noise
+            latents = noise
+
             return latents
         else:
             if not isinstance(image, (torch.Tensor, PIL.Image.Image, list)):
@@ -1511,6 +1705,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         self,
         prompt: Union[str, List[str]] = None,
         controlnet_conditioning=[],
+        latent_couple_conditioning=[],
         height: Optional[int] = 512,
         width: Optional[int] = 512,
         num_inference_steps: int = 50,
@@ -1528,6 +1723,8 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         callback_steps: int = 1,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         max_embeddings_multiples=3,
+        use_last_noise=False,
+        noise_type='random',
     ):
         
         # 1. Default height and width to unet
@@ -1562,6 +1759,57 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
             max_embeddings_multiples,
         )
         encoder_hidden_states = prompt_embeds
+
+        # latent couple prompt
+        if len(latent_couple_conditioning) > 0:
+            lc_prompt = [lc['prompt'] for lc in latent_couple_conditioning]
+            lc_prompt_embeds = self._encode_prompt(
+                prompt=lc_prompt,
+                device=device,
+                num_images_per_prompt=num_images_per_prompt,
+                do_classifier_free_guidance=False,
+                negative_prompt=None,
+                max_embeddings_multiples=max_embeddings_multiples,
+            )
+            # nb_repeat = int(np.ceil(max(encoder_hidden_states.shape[1], lc_prompt_embeds.shape[1]) / min(encoder_hidden_states.shape[1], lc_prompt_embeds.shape[1])))
+            # if encoder_hidden_states.shape[1] > lc_prompt_embeds.shape[1]:
+            #     lc_prompt_embeds = torch.cat([lc_prompt_embeds] * nb_repeat, dim=1)
+            # else:
+            #     encoder_hidden_states = torch.cat([encoder_hidden_states] * nb_repeat, dim=1)
+            # length_prompt = min(encoder_hidden_states.shape[1], lc_prompt_embeds.shape[1])
+            # lc_prompt_embeds = lc_prompt_embeds[:, :length_prompt]
+            # encoder_hidden_states = encoder_hidden_states[:, :length_prompt]
+            # encoder_hidden_states = torch.cat([encoder_hidden_states[0:1], lc_prompt_embeds, encoder_hidden_states[1:2]])
+        
+            lc_encoder_hidden_states = lc_prompt_embeds
+
+        # latent couple mask and control
+        # lc_controlnet_index_list = []
+        for idx_lc in range(len(latent_couple_conditioning)):
+            mask_image_raw = latent_couple_conditioning[idx_lc]['mask']
+            latent_couple_conditioning[idx_lc]['mask'] = self._prepare_latent_couple_mask(mask_image_raw, height, width, device, dtype)
+            # latent_couple_conditioning[idx_lc]['attention_mask'] = self._prepare_latent_couple_attention_mask(latent_couple_conditioning[idx_lc]['mask'], lc_encoder_hidden_states.shape[1])
+            # latent_couple_conditioning[idx_lc]['attention_probs_weight'] = self._prepare_latent_couple_attention_probs_weight(latent_couple_conditioning[idx_lc]['mask'], lc_encoder_hidden_states.shape[1])
+            if 'controlnet_conditioning' in latent_couple_conditioning[idx_lc]:
+                for idx_lc_cc in range(len(latent_couple_conditioning[idx_lc]['controlnet_conditioning'])):
+                    latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]['image'] = prepare_controlnet_conditioning_image(
+                        latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]['image'],
+                        width,
+                        height,
+                        batch_size * num_images_per_prompt,
+                        num_images_per_prompt,
+                        device,
+                        self.controlnet_list[0].dtype,
+                    )
+                    # lc_controlnet_index_list.append(latent_couple_conditioning[idx_lc]['control']['index'])
+                    if 'visual_emb' in latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]:
+                        face_emb = torch.tensor(latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]['visual_emb']).to(device=device, dtype=dtype)
+                        face_emb = face_emb.reshape([-1, 1, 512])
+                        latent_couple_conditioning[idx_lc]['controlnet_conditioning'][idx_lc_cc]['visual_emb'] = face_emb
+        # lc_controlnet_index_list = np.unique(lc_controlnet_index_list).tolist()
+
+
+
 
         # 4. Prepare mask, image, and controlnet_conditioning_image
         # if image is not None:
@@ -1600,15 +1848,61 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
             self.vae.dtype,
             device,
             generator,
+            use_last_noise,
+            noise_type,
         )
         latents = latents.to(self.unet.dtype)
 
         if do_classifier_free_guidance:
             for idx in range(len(controlnet_conditioning)):
                 cc_info = controlnet_conditioning[idx]
-                cc_info['control_image'] = torch.cat([cc_info['control_image']] * 2)
+
+                # control_image
+                control_image_list = [cc_info['control_image']]
+                # for idx_lc in range(len(latent_couple_conditioning)):
+                #     control_image_list.append(cc_info['control_image'])
+                control_image_list.append(cc_info['control_image'])
+                cc_info['control_image'] = torch.cat(control_image_list)
+
+                # control_visual_emb
                 if 'control_visual_emb' in cc_info:
-                    cc_info['control_visual_emb'] = torch.cat([torch.zeros_like(cc_info['control_visual_emb']), cc_info['control_visual_emb']])
+                    if 'control_visual_emb_neg' in cc_info:
+                        control_visual_emb_neg = cc_info['control_visual_emb_neg']
+                        control_visual_emb_neg = torch.tensor(control_visual_emb_neg).to(device=device, dtype=dtype)
+                        control_visual_emb_neg = control_visual_emb_neg.reshape([-1, 1, 512])
+                    else:
+                        control_visual_emb_neg = torch.zeros_like(cc_info['control_visual_emb'])
+                    control_visual_emb_list = [control_visual_emb_neg]
+                    # for idx_lc in range(len(latent_couple_conditioning)):
+                    #     control_visual_emb_list.append(cc_info['control_visual_emb'])
+                    control_visual_emb_list.append(cc_info['control_visual_emb'])
+                    cc_info['control_visual_emb'] = torch.cat(control_visual_emb_list)
+
+        # latent couple control
+        # lc_controlnet_conditioning = []
+        # for lc_controlnet_index in lc_controlnet_index_list:
+        #     # control_image
+        #     lc_controlnet_conditioning_image = torch.zeros([batch_size, 3, height, width], dtype=dtype, device=device)
+        #     nb_repeat = 1 + len(latent_couple_conditioning) + 1 if do_classifier_free_guidance else 1 + len(latent_couple_conditioning)
+        #     lc_controlnet_conditioning_image = torch.repeat_interleave(lc_controlnet_conditioning_image, nb_repeat, dim=0)
+        #     for idx_lc in range(len(latent_couple_conditioning)):
+        #         if not ('control' in latent_couple_conditioning[idx_lc] and latent_couple_conditioning[idx_lc]['control']['index'] == lc_controlnet_index):
+        #             continue
+        #         lc_controlnet_conditioning_image[1+idx_lc:1+idx_lc+1] = latent_couple_conditioning[idx_lc]['control']['image']
+            
+        #     # control_index
+        #     lc_controlnet_index = lc_controlnet_index
+
+        #     # control_weight
+        #     lc_control_weight = latent_couple_conditioning[idx_lc]['control']['weight']
+
+        #     cc_info = dict(
+        #         control_image=lc_controlnet_conditioning_image,
+        #         control_index=lc_controlnet_index,
+        #         control_weight=lc_control_weight,
+        #     )
+        #     lc_controlnet_conditioning.append(cc_info)
+
 
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -1621,6 +1915,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+                # controlnet
                 if len(controlnet_conditioning) > 0:
                     down_block_res_samples_list, mid_block_res_sample_list = [], []
                     for cc_info in controlnet_conditioning:
@@ -1630,7 +1925,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
                         if 'control_visual_emb' in cc_info:
                             controlnet_encoder_hidden_states = controlnet.visual_embedding(cc_info['control_visual_emb'])
                         else:
-                            controlnet_encoder_hidden_states = prompt_embeds
+                            controlnet_encoder_hidden_states = encoder_hidden_states
                         down_block_res_samples, mid_block_res_sample = controlnet(
                             latent_model_input,
                             t,
@@ -1684,10 +1979,90 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
                     mid_block_additional_residual=mid_block_res_sample,
                 ).sample
 
+                # latent couple every sample
+                if len(latent_couple_conditioning) > 0:
+                    lc_noise_pred_list = []
+                    for idx_lc in range(len(latent_couple_conditioning)):
+                        lcc_info = latent_couple_conditioning[idx_lc]
+                        lc_controlnet_conditioning = lcc_info.get('controlnet_conditioning', [])
+                        # lc_attention_probs_weight = lcc_info['attention_probs_weight']
+
+                        # controlnet
+                        if len(lc_controlnet_conditioning) > 0:
+                            lc_down_block_res_samples_list, lc_mid_block_res_sample_list = [], []
+                            for cc_info in lc_controlnet_conditioning:
+                                controlnet_conditioning_image = cc_info['image']
+                                controlnet = self.controlnet_list[int(cc_info['index'])]
+                                controlnet_conditioning_scale = cc_info['weight']
+                                if 'visual_emb' in cc_info:
+                                    controlnet_encoder_hidden_states = controlnet.visual_embedding(cc_info['visual_emb'])
+                                else:
+                                    controlnet_encoder_hidden_states = lc_encoder_hidden_states[idx_lc:idx_lc+1]
+                                lc_down_block_res_samples, lc_mid_block_res_sample = controlnet(
+                                    latent_model_input[0:1],
+                                    t,
+                                    encoder_hidden_states=controlnet_encoder_hidden_states,
+                                    controlnet_cond=controlnet_conditioning_image,
+                                    return_dict=False,
+                                )
+                                lc_down_block_res_samples = [
+                                    down_block_res_sample * controlnet_conditioning_scale
+                                    for down_block_res_sample in lc_down_block_res_samples
+                                ]
+                                lc_mid_block_res_sample *= controlnet_conditioning_scale
+                                lc_down_block_res_samples_list.append(lc_down_block_res_samples)
+                                lc_mid_block_res_sample_list.append(lc_mid_block_res_sample)
+
+                            lc_down_block_res_samples, lc_mid_block_res_sample = [0] * len(lc_down_block_res_samples_list[0]), 0
+                            for idx_controlnet in range(len(lc_down_block_res_samples_list)):
+                                lc_mid_block_res_sample += lc_mid_block_res_sample_list[idx_controlnet]
+                                for idx_dbrs in range(len(lc_down_block_res_samples_list[idx_controlnet])):
+                                    lc_down_block_res_samples[idx_dbrs] += lc_down_block_res_samples_list[idx_controlnet][idx_dbrs]
+                        else:
+                            lc_down_block_res_samples, lc_mid_block_res_sample = [0] * 12, 0
+
+                        lc_noise_pred = self.unet(
+                            latent_model_input[0:1],
+                            t,
+                            encoder_hidden_states=lc_encoder_hidden_states[idx_lc:idx_lc+1],
+                            cross_attention_kwargs=cross_attention_kwargs,
+                            down_block_additional_residuals=lc_down_block_res_samples,
+                            mid_block_additional_residual=lc_mid_block_res_sample,
+                            # attention_probs_weight=lc_attention_probs_weight,
+                        ).sample
+                        lc_noise_pred_list.append(lc_noise_pred)
+
+
                 # perform guidance
                 if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    if len(latent_couple_conditioning) > 0:
+                        noise_pred_uncond = noise_pred[0:1]
+                        noise_preds = [noise_pred[1:2]] + lc_noise_pred_list  # prompt, lc1, lc2 ....
+                        noise_preds = torch.cat(noise_preds)
+                        noise_preds = noise_pred_uncond + guidance_scale * (noise_preds - noise_pred_uncond)
+
+                        background_weight = 1 - np.mean([lcc['weight'] for lcc in latent_couple_conditioning])
+                        result = noise_preds[0:1] * background_weight
+                        mask_empty = torch.ones_like(latent_couple_conditioning[0]['mask'])
+                        for idx_lc in range(1, len(noise_preds)):
+                            weight_idx = latent_couple_conditioning[idx_lc-1]['weight']
+                            mask_idx = latent_couple_conditioning[idx_lc-1]['mask']
+
+                            # 当前lc和历史lc的交集区域
+                            mask_intersection = mask_idx * (1 - mask_empty)
+
+                            result += noise_preds[idx_lc:idx_lc+1] * weight_idx * mask_idx * (1 - mask_intersection)
+                            result = (0.5 * result + 0.5 * (weight_idx * noise_preds[idx_lc:idx_lc+1] + (1 - weight_idx) * noise_preds[0:1])) * mask_intersection + result * (1 - mask_intersection)
+
+                            # 没被lc覆盖的背景区域
+                            mask_empty = mask_empty * (1 - mask_idx)
+
+                            # result += noise_preds[idx_lc:idx_lc+1] * weight_idx * mask_idx
+                        result += noise_preds[0:1] * (1 - background_weight) * mask_empty
+                        noise_pred = result
+                    else:
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
@@ -1779,7 +2154,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         return latents, init_latents_orig, noise
 
     @torch.no_grad()
-    def inpatinting(
+    def inpainting(
         self,
         prompt: Union[str, List[str]] = None,
         image: Union[torch.Tensor, PIL.Image.Image] = None,
@@ -1891,7 +2266,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
             generator,
             mask_image
         ) # torch.Size([1, 4, H//60, W//60])    
-        latents = latents.to(dtype)    
+        latents = latents.to(dtype)
 
         if do_classifier_free_guidance:
             for idx in range(len(controlnet_conditioning)):
@@ -1909,8 +2284,8 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
         latmask = np.around(latmask)
         latmask = np.tile(latmask[None], (4, 1, 1))
 
-        mask = torch.asarray(1.0 - latmask).to(latents.device).type(latents.dtype) # torch.Size([4, H//60, W//60])        
-        nmask = torch.asarray(latmask).to(latents.device).type(latents.dtype) # torch.Size([4, H//60, W//60])        
+        mask = torch.asarray(1.0 - latmask).to(latents.device).type(self.vae.dtype) # torch.Size([4, H//60, W//60])        
+        nmask = torch.asarray(latmask).to(latents.device).type(self.vae.dtype) # torch.Size([4, H//60, W//60])   
 
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -2004,7 +2379,7 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
                 else:
                     init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise, torch.tensor([t]))
 
-                latents = init_latents_proper * mask + latents * nmask
+                latents = init_latents_proper.to(latents.dtype) * mask.to(latents.dtype) + latents * nmask.to(latents.dtype)
                 latents = latents.to(dtype)
                 
                 # call the callback, if provided
@@ -2021,8 +2396,9 @@ class StableDiffusionCommonPipeline(DiffusionPipeline):
                 #print(mask.max(), mask.min())
 
         # use original latents corresponding to unmasked portions of the image
-        latents = init_latents_orig * mask + latents * nmask
         latents = latents.to(self.vae.dtype)
+        latents = init_latents_orig * mask + latents * nmask
+        # latents = init_latents_orig
         
         # If we do sequential model offloading, let's offload unet and controlnet
         # manually for max memory savings

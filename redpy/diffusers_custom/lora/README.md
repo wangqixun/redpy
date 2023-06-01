@@ -10,6 +10,6 @@ base_model = 'base_model path'
 lora_path = 'lora path'
 lora_weight = 0.6
 
-pipe = StableDiffusionCommonPipeline.from_pretrained(base_model)
+pipe = StableDiffusionCommonPipeline.from_pretrained(base_model, safety_checker=None, feature_extractor=None)
 pipe = add_lora(lora_path, pipe, lora_weight)
 ```

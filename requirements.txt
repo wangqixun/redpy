@@ -16,8 +16,9 @@ pandas
 moviepy==2.0.0.dev2
 decord==0.4.1
 streamlit==1.10.0
-protobuf==3.19.4
+#protobuf==3.19.4
+protobuf==3.20.1
 grpcio==1.44.0
 grpcio-tools==1.44.0
-opencv-python==4.5.5.64
+opencv-python-headless==4.5.5.64
 safetensors
